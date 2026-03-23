@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-pkgs-ai-docs</ToolCommandName>
+    <PackageId>dotnet-pkgs-ai-docs</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Jean-Marc Prieur</Authors>
+    <Description>Generate AI-ready documentation (transitive dependency graphs and public API surfaces) from NuGet packages — no source code required.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/jmprieur/pkgs-ai-docs</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jmprieur/pkgs-ai-docs</RepositoryUrl>
+    <PackageTags>nuget;documentation;ai;dependencies;public-api;dotnet-tool</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="8.0.1" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
