@@ -10,27 +10,71 @@ namespace DotnetPkgsAiDocs.Analysis;
 public static class PublicApiAnalyzer
 {
     /// <summary>
-    /// Analyzes a specific TFM inside a .nupkg and returns the public API surface.
+    /// Extracts all DLLs from all nupkg files for a given TFM into a shared directory.
+    /// Returns the path to the shared directory. Caller is responsible for cleanup.
     /// </summary>
-    public static PublicApiResult? Analyze(string nupkgPath, PackageInfo packageInfo, string tfm)
+    public static string ExtractAllAssembliesForTfm(IReadOnlyList<string> nupkgPaths, string tfm)
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), "pkgs-ai-docs-api", Guid.NewGuid().ToString("N"));
+        var sharedDir = Path.Combine(Path.GetTempPath(), "pkgs-ai-docs-api", $"shared-{tfm}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sharedDir);
+
+        foreach (var nupkgPath in nupkgPaths)
+        {
+            try
+            {
+                using var archive = ZipFile.OpenRead(nupkgPath);
+                var prefix = $"lib/{tfm}/";
+                var entries = archive.Entries
+                    .Where(e => e.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                             && e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+
+                foreach (var entry in entries)
+                {
+                    var destPath = Path.Combine(sharedDir, entry.Name);
+                    if (!File.Exists(destPath))
+                    {
+                        entry.ExtractToFile(destPath);
+                    }
+                }
+            }
+            catch
+            {
+                // Skip nupkgs that can't be read
+            }
+        }
+
+        return sharedDir;
+    }
+
+    /// <summary>
+    /// Analyzes a specific TFM inside a .nupkg and returns the public API surface.
+    /// Uses the sharedRefDir for cross-package assembly resolution.
+    /// </summary>
+    public static PublicApiResult? Analyze(string nupkgPath, PackageInfo packageInfo, string tfm, string sharedRefDir)
+    {
         try
         {
-            Directory.CreateDirectory(tempDir);
-
-            // Extract assemblies for this TFM from the nupkg
-            var assemblies = ExtractAssemblies(nupkgPath, tfm, tempDir);
-            if (assemblies.Count == 0)
+            // Find which assemblies belong to THIS package (already extracted in sharedRefDir)
+            var packageAssemblyNames = GetPackageAssemblyNames(nupkgPath, tfm);
+            if (packageAssemblyNames.Count == 0)
             {
                 return null;
             }
 
-            // Build the resolver paths: extracted assemblies + .NET ref assemblies
-            // Deduplicate by filename, preferring ref assemblies over runtime assemblies
+            var packageAssemblyPaths = packageAssemblyNames
+                .Select(name => Path.Combine(sharedRefDir, name))
+                .Where(File.Exists)
+                .ToList();
+
+            if (packageAssemblyPaths.Count == 0)
+            {
+                return null;
+            }
+
+            // Build resolver: runtime assemblies < ref assemblies < shared extracted assemblies
             var pathsByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            // Add runtime assemblies first (lowest priority)
+            // Runtime assemblies (lowest priority)
             var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
             if (runtimeDir != null)
             {
@@ -40,16 +84,16 @@ public static class PublicApiAnalyzer
                 }
             }
 
-            // Add ref assemblies (override runtime ones)
+            // Ref assemblies (override runtime)
             foreach (var refPath in GetReferenceAssemblyPaths(tfm))
             {
                 pathsByName[Path.GetFileName(refPath)] = refPath;
             }
 
-            // Add extracted assemblies (highest priority — these are what we're analyzing)
-            foreach (var asmPath in assemblies)
+            // All sibling assemblies from all nupkgs (highest priority)
+            foreach (var dll in Directory.GetFiles(sharedRefDir, "*.dll"))
             {
-                pathsByName[Path.GetFileName(asmPath)] = asmPath;
+                pathsByName[Path.GetFileName(dll)] = dll;
             }
 
             var resolver = new PathAssemblyResolver(pathsByName.Values);
@@ -57,7 +101,7 @@ public static class PublicApiAnalyzer
 
             var apiLines = new List<string>();
 
-            foreach (var assemblyPath in assemblies)
+            foreach (var assemblyPath in packageAssemblyPaths)
             {
                 try
                 {
@@ -79,10 +123,26 @@ public static class PublicApiAnalyzer
             Console.Error.WriteLine($"    Error analyzing API for {packageInfo.Id} -> {tfm}: {ex.Message}");
             return null;
         }
-        finally
+    }
+
+    /// <summary>
+    /// Gets the DLL filenames inside a nupkg for a given TFM without extracting them.
+    /// </summary>
+    private static List<string> GetPackageAssemblyNames(string nupkgPath, string tfm)
+    {
+        try
         {
-            try { Directory.Delete(tempDir, recursive: true); }
-            catch { /* best effort cleanup */ }
+            using var archive = ZipFile.OpenRead(nupkgPath);
+            var prefix = $"lib/{tfm}/";
+            return archive.Entries
+                .Where(e => e.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                         && e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                .Select(e => e.Name)
+                .ToList();
+        }
+        catch
+        {
+            return [];
         }
     }
 

@@ -47,23 +47,59 @@ internal static class ApiCommand
 
         Console.WriteLine($"Found {nupkgFiles.Length} .nupkg files in {inputFolder.FullName}");
 
-        var allResults = new List<PublicApiResult>();
+        // Collect all nupkg paths (excluding snupkg) and their metadata
+        var nupkgPaths = new List<string>();
+        var packages = new List<(FileInfo file, PackageInfo info)>();
         foreach (var nupkg in nupkgFiles)
         {
             if (nupkg.Name.EndsWith(".snupkg", StringComparison.OrdinalIgnoreCase))
                 continue;
 
+            nupkgPaths.Add(nupkg.FullName);
             var info = NupkgExtractor.Extract(nupkg.FullName);
-            if (info == null) continue;
+            if (info != null)
+                packages.Add((nupkg, info));
+        }
 
-            foreach (var tfm in info.TargetFrameworks)
+        // Discover all TFMs across all packages
+        var allTfms = packages
+            .SelectMany(p => p.info.TargetFrameworks)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t)
+            .ToList();
+
+        Console.WriteLine($"Target frameworks found: {string.Join(", ", allTfms)}");
+
+        var allResults = new List<PublicApiResult>();
+
+        // Process per TFM: extract all assemblies once, then analyze each package
+        foreach (var tfm in allTfms)
+        {
+            Console.WriteLine($"\n  Extracting all assemblies for {tfm}...");
+            var sharedRefDir = PublicApiAnalyzer.ExtractAllAssembliesForTfm(nupkgPaths, tfm);
+
+            try
             {
-                Console.WriteLine($"  Extracting API: {info.Id} {info.Version} -> {tfm}...");
-                var result = PublicApiAnalyzer.Analyze(nupkg.FullName, info, tfm);
-                if (result != null)
+                var dllCount = Directory.GetFiles(sharedRefDir, "*.dll").Length;
+                Console.WriteLine($"  {dllCount} assemblies available for resolution");
+
+                foreach (var (nupkg, info) in packages)
                 {
-                    allResults.Add(result);
+                    if (!info.TargetFrameworks.Contains(tfm, StringComparer.OrdinalIgnoreCase))
+                        continue;
+
+                    Console.WriteLine($"    Extracting API: {info.Id} {info.Version} -> {tfm}...");
+                    var result = PublicApiAnalyzer.Analyze(nupkg.FullName, info, tfm, sharedRefDir);
+                    if (result != null)
+                    {
+                        allResults.Add(result);
+                    }
                 }
+            }
+            finally
+            {
+                try { Directory.Delete(sharedRefDir, recursive: true); }
+                catch { /* best effort cleanup */ }
             }
         }
 
