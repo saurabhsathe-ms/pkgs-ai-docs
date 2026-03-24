@@ -18,7 +18,8 @@ This is `dotnet-pkgs-ai-docs`, a .NET CLI tool that generates AI-ready documenta
 - `NameMatchingAssemblyResolver` — custom `MetadataAssemblyResolver` that resolves by simple name, ignoring version mismatches (handles placeholder versions like 42.42.42.42)
 - TFM fallback — when extracting sibling assemblies, falls back through compatible TFMs (e.g., net10.0 → net9.0 → net8.0 → netstandard2.1)
 - TFM normalization — handles multiple nuspec TFM formats: `.NETFramework,Version=v4.6.2`, `.NETFramework4.6.2`, `net462` all normalize to `net462`
-- NuGet global cache fallback — scans `~/.nuget/packages/` for external dependencies not in the input folder
+- NuGet global cache fallback — scans `~/.nuget/packages/` for external dependencies not in the input folder, with TFM fallback
+- ASP.NET Core ref pack scanning — resolves `Microsoft.AspNetCore.Authentication` etc. from SDK's `Microsoft.AspNetCore.App.Ref` packs
 - Per-TFM batch extraction — all DLLs from all nupkgs extracted once per TFM into a shared directory for cross-package resolution
 - `[Obsolete]` filtering — types and members marked with `[System.ObsoleteAttribute]` are excluded from public API output
 - `Microsoft.NETFramework.ReferenceAssemblies` for net462/net472 ref assemblies

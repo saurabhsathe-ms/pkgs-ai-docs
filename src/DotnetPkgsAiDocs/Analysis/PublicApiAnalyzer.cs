@@ -223,6 +223,7 @@ public static class PublicApiAnalyzer
         // For net8.0, net9.0, etc. — look in packs/Microsoft.NETCore.App.Ref
         if (tfm.StartsWith("net") && !tfm.StartsWith("net4") && !tfm.StartsWith("netstandard"))
         {
+            // Microsoft.NETCore.App.Ref — core runtime assemblies
             var packsDir = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
             if (Directory.Exists(packsDir))
             {
@@ -239,7 +240,29 @@ public static class PublicApiAnalyzer
                         {
                             yield return dll;
                         }
-                        yield break;
+                        break;
+                    }
+                }
+            }
+
+            // Microsoft.AspNetCore.App.Ref — ASP.NET Core assemblies (Microsoft.AspNetCore.Authentication, etc.)
+            var aspNetPacksDir = Path.Combine(dotnetRoot, "packs", "Microsoft.AspNetCore.App.Ref");
+            if (Directory.Exists(aspNetPacksDir))
+            {
+                var versionDirs = Directory.GetDirectories(aspNetPacksDir)
+                    .OrderByDescending(d => d)
+                    .ToList();
+
+                foreach (var versionDir in versionDirs)
+                {
+                    var refDir = Path.Combine(versionDir, "ref", tfm);
+                    if (Directory.Exists(refDir))
+                    {
+                        foreach (var dll in Directory.GetFiles(refDir, "*.dll"))
+                        {
+                            yield return dll;
+                        }
+                        break;
                     }
                 }
             }
@@ -479,6 +502,9 @@ public static class PublicApiAnalyzer
 
         if (!Directory.Exists(nugetCache)) return;
 
+        // Build list of compatible TFMs to try
+        var compatibleTfms = GetCompatibleTfms(tfm);
+
         // Search for DLLs matching the TFM in the cache
         // Structure: ~/.nuget/packages/{packageId}/{version}/lib/{tfm}/*.dll
         try
@@ -493,17 +519,22 @@ public static class PublicApiAnalyzer
                     .OrderByDescending(d => Path.GetFileName(d))
                     .First();
 
-                var libTfmDir = Path.Combine(latestVersion, "lib", tfm);
-                if (Directory.Exists(libTfmDir))
+                // Try each compatible TFM in priority order
+                foreach (var candidateTfm in compatibleTfms)
                 {
-                    foreach (var dll in Directory.GetFiles(libTfmDir, "*.dll"))
+                    var libTfmDir = Path.Combine(latestVersion, "lib", candidateTfm);
+                    if (Directory.Exists(libTfmDir))
                     {
-                        var fileName = Path.GetFileName(dll);
-                        // Don't overwrite higher-priority entries
-                        if (!pathsByName.ContainsKey(fileName))
+                        foreach (var dll in Directory.GetFiles(libTfmDir, "*.dll"))
                         {
-                            pathsByName[fileName] = dll;
+                            var fileName = Path.GetFileName(dll);
+                            // Don't overwrite higher-priority entries
+                            if (!pathsByName.ContainsKey(fileName))
+                            {
+                                pathsByName[fileName] = dll;
+                            }
                         }
+                        break; // Found assemblies for this package, don't try lower TFMs
                     }
                 }
             }
