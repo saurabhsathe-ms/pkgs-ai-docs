@@ -71,7 +71,7 @@ public static class PublicApiAnalyzer
         if (tfm.StartsWith("net") && !tfm.StartsWith("net4") && !tfm.StartsWith("netstandard")
             && Version.TryParse(tfm[3..], out var version))
         {
-            // Add lower major versions down to net8.0
+            // Add lower major versions down to net6.0
             for (var v = version.Major - 1; v >= 6; v--)
             {
                 result.Add($"net{v}.0");
@@ -174,44 +174,33 @@ public static class PublicApiAnalyzer
 
     /// <summary>
     /// Gets the DLL filenames inside a nupkg for a given TFM without extracting them.
+    /// Falls back through compatible TFMs (matching ExtractAllAssembliesForTfm behavior).
     /// </summary>
     private static List<string> GetPackageAssemblyNames(string nupkgPath, string tfm)
     {
         try
         {
             using var archive = ZipFile.OpenRead(nupkgPath);
-            var prefix = $"lib/{tfm}/";
-            return archive.Entries
-                .Where(e => e.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                         && e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                .Select(e => e.Name)
-                .ToList();
+
+            foreach (var candidateTfm in GetCompatibleTfms(tfm))
+            {
+                var prefix = $"lib/{candidateTfm}/";
+                var names = archive.Entries
+                    .Where(e => e.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                             && e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                    .Select(e => e.Name)
+                    .ToList();
+
+                if (names.Count > 0)
+                    return names;
+            }
+
+            return [];
         }
         catch
         {
             return [];
         }
-    }
-
-    private static List<string> ExtractAssemblies(string nupkgPath, string tfm, string tempDir)
-    {
-        var extracted = new List<string>();
-        using var archive = ZipFile.OpenRead(nupkgPath);
-
-        var prefix = $"lib/{tfm}/";
-        var entries = archive.Entries
-            .Where(e => e.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                     && e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        foreach (var entry in entries)
-        {
-            var destPath = Path.Combine(tempDir, entry.Name);
-            entry.ExtractToFile(destPath, overwrite: true);
-            extracted.Add(destPath);
-        }
-
-        return extracted;
     }
 
     private static IEnumerable<string> GetReferenceAssemblyPaths(string tfm)
@@ -227,9 +216,7 @@ public static class PublicApiAnalyzer
             var packsDir = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
             if (Directory.Exists(packsDir))
             {
-                var versionDirs = Directory.GetDirectories(packsDir)
-                    .OrderByDescending(d => d)
-                    .ToList();
+                var versionDirs = SortDirectoriesByVersionDescending(Directory.GetDirectories(packsDir));
 
                 foreach (var versionDir in versionDirs)
                 {
@@ -249,9 +236,7 @@ public static class PublicApiAnalyzer
             var aspNetPacksDir = Path.Combine(dotnetRoot, "packs", "Microsoft.AspNetCore.App.Ref");
             if (Directory.Exists(aspNetPacksDir))
             {
-                var versionDirs = Directory.GetDirectories(aspNetPacksDir)
-                    .OrderByDescending(d => d)
-                    .ToList();
+                var versionDirs = SortDirectoriesByVersionDescending(Directory.GetDirectories(aspNetPacksDir));
 
                 foreach (var versionDir in versionDirs)
                 {
@@ -284,9 +269,8 @@ public static class PublicApiAnalyzer
 
                 if (Directory.Exists(refAsmPkg))
                 {
-                    var latestVersion = Directory.GetDirectories(refAsmPkg)
-                        .OrderByDescending(d => d)
-                        .FirstOrDefault();
+                    var latestVersion = SortDirectoriesByVersionDescending(
+                        Directory.GetDirectories(refAsmPkg)).FirstOrDefault();
 
                     if (latestVersion != null)
                     {
@@ -302,6 +286,19 @@ public static class PublicApiAnalyzer
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Sorts directories by parsed semantic version (descending), falling back to lexicographic order.
+    /// </summary>
+    private static IReadOnlyList<string> SortDirectoriesByVersionDescending(string[] dirs)
+    {
+        return dirs
+            .Select(d => (dir: d, version: Version.TryParse(Path.GetFileName(d), out var v) ? v : null))
+            .OrderByDescending(x => x.version)
+            .ThenByDescending(x => x.dir)
+            .Select(x => x.dir)
+            .ToList();
     }
 
     private static string? GetDotnetRoot()
@@ -355,7 +352,7 @@ public static class PublicApiAnalyzer
             types = ex.Types.Where(t => t != null).ToArray()!;
         }
 
-        foreach (var type in types.Where(t => t.IsPublic || t.IsNestedPublic))
+        foreach (var type in types.Where(t => t.IsPublic || (t.IsNestedPublic && IsEffectivelyPublic(t))))
         {
             if (IsObsolete(type)) continue;
 
@@ -370,7 +367,8 @@ public static class PublicApiAnalyzer
                 {
                     if (IsObsolete(ctor)) continue;
                     var parameters = FormatParameters(ctor.GetParameters());
-                    lines.Add($"{typeName}.{type.Name}({parameters}) -> void");
+                    var ctorName = StripGenericArity(type.Name);
+                    lines.Add($"{typeName}.{ctorName}({parameters}) -> void");
                 }
             }
             catch { /* skip on error */ }
@@ -423,6 +421,7 @@ public static class PublicApiAnalyzer
                 foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
                 {
                     if (field.Name.Contains("k__BackingField", StringComparison.Ordinal)) continue;
+                    if (field.Name == "value__" && type.IsEnum) continue;
                     if (IsObsolete(field)) continue;
                     var fieldType = FormatTypeName(field.FieldType);
                     var constMod = field.IsLiteral ? "const " : (field.IsStatic ? "static " : "");
@@ -435,6 +434,22 @@ public static class PublicApiAnalyzer
         return lines;
     }
 
+    /// <summary>
+    /// Checks whether a nested type is effectively public by verifying all enclosing types are also public.
+    /// A public nested type inside an internal class is not accessible outside the assembly.
+    /// </summary>
+    private static bool IsEffectivelyPublic(Type type)
+    {
+        var current = type.DeclaringType;
+        while (current != null)
+        {
+            if (!(current.IsPublic || current.IsNestedPublic))
+                return false;
+            current = current.DeclaringType;
+        }
+        return true;
+    }
+
     private static string FormatTypeName(Type type)
     {
         if (type.IsGenericType)
@@ -445,11 +460,23 @@ public static class PublicApiAnalyzer
             {
                 name = name[..backtick];
             }
+            // Normalize nested type separator from '+' to '.'
+            name = name.Replace('+', '.');
             var args = type.GetGenericArguments().Select(FormatTypeName);
             return $"{name}<{string.Join(", ", args)}>";
         }
 
-        return type.FullName ?? type.Name;
+        // Normalize nested type separator from '+' to '.'
+        return (type.FullName ?? type.Name).Replace('+', '.');
+    }
+
+    /// <summary>
+    /// Strips the generic arity suffix (e.g., "CacheItem`1" → "CacheItem").
+    /// </summary>
+    private static string StripGenericArity(string name)
+    {
+        var backtick = name.IndexOf('`');
+        return backtick > 0 ? name[..backtick] : name;
     }
 
     private static string FormatParameters(ParameterInfo[] parameters)
@@ -515,8 +542,7 @@ public static class PublicApiAnalyzer
                 var versionDirs = Directory.GetDirectories(packageDir);
                 if (versionDirs.Length == 0) continue;
 
-                var latestVersion = versionDirs
-                    .OrderByDescending(d => Path.GetFileName(d))
+                var latestVersion = SortDirectoriesByVersionDescending(versionDirs)
                     .First();
 
                 // Try each compatible TFM in priority order

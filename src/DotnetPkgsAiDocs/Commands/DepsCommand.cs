@@ -71,12 +71,11 @@ internal static class DepsCommand
 
         Console.WriteLine($"\nResolving transitive dependencies for {packages.Count} packages...");
 
-        // Build the list of NuGet sources
+        // Build the list of NuGet sources: input folder + user sources + nuget.org
         var sources = new List<string> { inputFolder.FullName };
         if (nugetSources != null)
             sources.AddRange(nugetSources);
-        else
-            sources.Add("https://api.nuget.org/v3/index.json");
+        sources.Add("https://api.nuget.org/v3/index.json");
 
         // Resolve transitive dependencies
         var allResults = new List<DependencyResult>();
